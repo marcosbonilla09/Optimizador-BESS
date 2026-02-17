@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+altair
+plotly
+ortools
+openpyxl
+xlsxwriter
+numba
+xlrd
