@@ -341,7 +341,17 @@ def as_eta(x):
 from ortools.linear_solver import pywraplp
 
 def simular_bess_milp(HW):
-        
+    """
+    Optimización LP (GLOP) en 2 etapas (lexicográfica):
+      - Etapa 1: minimizar excesos de potencia (ponderados por mes caro/medio/barato).
+      - Etapa 2: minimizar coste energético manteniendo excesos mínimos.
+
+    Degradación (Opción A):
+      - NO hay coste de degradación en la función objetivo.
+      - Se impone un presupuesto anual de ciclos equivalentes (EFC) con:
+            sum(descarga_kWh) <= E_CAP * N_CICLOS_EQ_MAX
+    """
+
     # Datos base del año (ya calculados al inicio del Paso 5)
     global cons, load_vec, generacion_vec, excedentes_vec, precio_vec, atr_vec, pot_contratada, precio_venta_fv_vec, base_dt_index
     T = len(base_dt_index)
@@ -355,7 +365,7 @@ def simular_bess_milp(HW):
     meses_intermedios  = {3, 6, 8, 9, 11}      # Mar, Jun, Ago, Sep, Nov
     meses_baratos      = {4, 5, 10}            # Abr, May, Oct
 
-    # Coeficiente €/kW (año) simplificado por mes
+    # Antes eran "€/kW" simplificados; ahora los usamos como PESOS (prioridad/riesgo), no como euros reales.
     coef_exceso_mes = {}
     for m in meses_unicos:
         if m in meses_caros:
@@ -365,18 +375,26 @@ def simular_bess_milp(HW):
         elif m in meses_baratos:
             coef_exceso_mes[m] = 0.19320267
         else:
-            coef_exceso_mes[m] = 0.0 
+            coef_exceso_mes[m] = 0.0
 
-    E_CAP   = float(HW["E_CAP"])
-    P_BATT  = float(HW["P_BATT"])
-    P_INV   = float(HW["P_INV"])
+    # --- Hardware / parámetros ---
+    E_CAP    = float(HW["E_CAP"])
+    P_BATT   = float(HW["P_BATT"])
+    P_INV    = float(HW["P_INV"])
     P_INV_FV = float(HW.get("P_INV_FV", 0.0))
-    SOC_MIN = float(HW["SOC_MIN"])
-    ETA_C   = float(HW["ETA_C"])
-    ETA_D   = float(HW["ETA_D"])
-    C_DEG_KWH = float(HW.get("C_DEG_KWH", 0.0))
-    E_MIN      = SOC_MIN * E_CAP
-    E_MAX_QH   = min(P_BATT, P_INV) * 0.25    # [kWh/QH]
+    SOC_MIN  = float(HW["SOC_MIN"])
+    ETA_C    = float(HW["ETA_C"])
+    ETA_D    = float(HW["ETA_D"])
+
+    # (Compat) antes tenías C_DEG_KWH en la FO; ahora NO se usa
+    _C_DEG_KWH_UNUSED = float(HW.get("C_DEG_KWH", 0.0))
+
+    # ✅ Degradación (Opción A): presupuesto anual de ciclos equivalentes (EFC)
+    N_CICLOS_EQ_MAX = float(HW.get("N_CICLOS_EQ_MAX", 1e9))  # [ciclos eq/año]; si no se define, no limita
+    EPS_EXCESOS = float(HW.get("EPS_EXCESOS", 1e-6))          # tolerancia para fijar excesos entre etapas
+
+    E_MIN       = SOC_MIN * E_CAP
+    E_MAX_QH    = min(P_BATT, P_INV) * 0.25    # [kWh/QH]
     E_MAX_QH_FV = min(P_BATT, P_INV_FV) * 0.25 if P_INV_FV > 0 else E_MAX_QH
 
     # ----- Crear solver LP -----
@@ -385,38 +403,38 @@ def simular_bess_milp(HW):
         raise RuntimeError("No se pudo crear el solver OR-Tools (GLOP).")
 
     # ----- Variables -----
-    e      = [solver.NumVar(E_MIN, E_CAP, f"e_{t}") for t in range(T)]
-    c_grid = [solver.NumVar(0.0, E_MAX_QH, f"c_grid_{t}") for t in range(T)]
-    c_pv   = [solver.NumVar(0.0, E_MAX_QH_FV, f"c_pv_{t}")   for t in range(T)]
-    d      = [solver.NumVar(0.0, E_MAX_QH, f"d_{t}")      for t in range(T)]
-    g_load = [solver.NumVar(0.0, solver.infinity(), f"g_load_{t}") for t in range(T)]
-    pv_load   = [solver.NumVar(0.0, solver.infinity(), f"pv_load_{t}")   for t in range(T)]
+    e        = [solver.NumVar(E_MIN, E_CAP, f"e_{t}") for t in range(T)]
+    c_grid   = [solver.NumVar(0.0, E_MAX_QH, f"c_grid_{t}") for t in range(T)]
+    c_pv     = [solver.NumVar(0.0, E_MAX_QH_FV, f"c_pv_{t}") for t in range(T)]
+    d        = [solver.NumVar(0.0, E_MAX_QH, f"d_{t}") for t in range(T)]
+    g_load   = [solver.NumVar(0.0, solver.infinity(), f"g_load_{t}") for t in range(T)]
+    pv_load  = [solver.NumVar(0.0, solver.infinity(), f"pv_load_{t}") for t in range(T)]
     pv_export = [solver.NumVar(0.0, solver.infinity(), f"pv_export_{t}") for t in range(T)]
-    p_grid = [solver.NumVar(0.0, solver.infinity(), f"p_grid_{t}") for t in range(T)]
-    z_mes = {m: solver.NumVar(0.0, solver.infinity(), f"z_exceso_mes_{m}") for m in meses_unicos}
+    p_grid   = [solver.NumVar(0.0, solver.infinity(), f"p_grid_{t}") for t in range(T)]
+    z_mes    = {m: solver.NumVar(0.0, solver.infinity(), f"z_exceso_mes_{m}") for m in meses_unicos}
 
     # ----- Restricciones -----
+
     # 1) Dinámica de batería
     # t = 0: e_0 = E_MIN + eta_c*(c0) - d0/eta_d
     cons0 = solver.Constraint(E_MIN, E_MIN)
     cons0.SetCoefficient(e[0], 1.0)
     cons0.SetCoefficient(c_grid[0], -ETA_C)
     cons0.SetCoefficient(c_pv[0], -ETA_C)
-    cons0.SetCoefficient(d[0], 1.0/ETA_D)
+    cons0.SetCoefficient(d[0], 1.0 / ETA_D)
 
     for t in range(1, T):
         ct = solver.Constraint(0.0, 0.0)
         # e_t - e_{t-1} - eta_c*(c_grid+c_pv) + d/eta_d = 0
         ct.SetCoefficient(e[t], 1.0)
-        ct.SetCoefficient(e[t-1], -1.0)
+        ct.SetCoefficient(e[t - 1], -1.0)
         ct.SetCoefficient(c_grid[t], -ETA_C)
         ct.SetCoefficient(c_pv[t], -ETA_C)
-        ct.SetCoefficient(d[t], 1.0/ETA_D)
+        ct.SetCoefficient(d[t], 1.0 / ETA_D)
 
-    # 1b) Condición SOC final
-    #     Evita "vaciar" la batería al final del año.
+    # 1b) Condición SOC final (evita vaciar la batería al final del año)
     ct_end = solver.Constraint(0.0, solver.infinity())  # e[T-1] - e[0] >= 0
-    ct_end.SetCoefficient(e[T-1], 1.0)
+    ct_end.SetCoefficient(e[T - 1], 1.0)
     ct_end.SetCoefficient(e[0], -1.0)
 
     # 2) Balance de carga: load_t = g_load_t + pv_load_t + d_t
@@ -426,7 +444,7 @@ def simular_bess_milp(HW):
         ct.SetCoefficient(pv_load[t], 1.0)
         ct.SetCoefficient(d[t], 1.0)
 
-    # 2b) Definición de la potencia importada de red [kW] en cada QH:
+    # 2b) Definición de potencia importada de red [kW] en cada QH:
     # p_grid_t = 4 * (g_load_t + c_grid_t)
     for t in range(T):
         ct_pg = solver.Constraint(0.0, 0.0)  # igualdad
@@ -438,10 +456,10 @@ def simular_bess_milp(HW):
     for t in range(T):
         ct = solver.Constraint(float(generacion_vec[t]), float(generacion_vec[t]))
         ct.SetCoefficient(pv_load[t], 1.0)
-        ct.SetCoefficient(c_pv[t],   1.0)
+        ct.SetCoefficient(c_pv[t], 1.0)
         ct.SetCoefficient(pv_export[t], 1.0)
 
-    # 3b) Carga de batería desde FV limitada a excedentes sin BESS
+    # 3b) Carga batería desde FV limitada a excedentes sin BESS
     for t in range(T):
         ct = solver.Constraint(0.0, float(excedentes_vec[t]))
         ct.SetCoefficient(c_pv[t], 1.0)
@@ -463,23 +481,20 @@ def simular_bess_milp(HW):
     #    - la potencia contratada si el consumo base está por debajo
     #    - el propio consumo base si ya está por encima (no empeorar excesos)
     for t in range(T):
-        P_cons_t = 4.0 * float(cons[t])                 # kW sin BESS
-        P_contr_t = float(pot_contratada[t])            # kW contratada (SIN tolerancias)
-
-        P_cap_t = max(P_cons_t, P_contr_t)              # techo "no empeorar"
+        P_cons_t  = 4.0 * float(cons[t])          # kW sin BESS
+        P_contr_t = float(pot_contratada[t])      # kW contratada (SIN tolerancias)
+        P_cap_t   = max(P_cons_t, P_contr_t)      # techo "no empeorar"
 
         ct = solver.Constraint(-solver.infinity(), float(P_cap_t))
         ct.SetCoefficient(p_grid[t], 1.0)
 
-    # 4b) Enlace de la potencia de red con el exceso mensual simplificado:
-    # z_mes[m] ≈ max_t (p_grid_t - 1.0 * Pcontr_t, 0) para cada mes m
+    # 4b) Enlace con exceso mensual simplificado:
+    # z_mes[m] >= p_grid_t - Pcontr_t
     for t in range(T):
         m = int(meses[t])
         P_lim_t = float(pot_contratada[t])
 
-        # Restricción: p_grid_t - z_mes[m] <= P_lim_t
-        #  ⇒ z_mes[m] >= p_grid_t - P_lim_t
-        ct_z = solver.Constraint(-solver.infinity(), P_lim_t)
+        ct_z = solver.Constraint(-solver.infinity(), P_lim_t)  # p_grid_t - z_mes[m] <= P_lim_t
         ct_z.SetCoefficient(p_grid[t], 1.0)
         ct_z.SetCoefficient(z_mes[m], -1.0)
 
@@ -488,19 +503,54 @@ def simular_bess_milp(HW):
         # c_grid + c_pv <= E_MAX_QH
         ct_c = solver.Constraint(-solver.infinity(), E_MAX_QH)
         ct_c.SetCoefficient(c_grid[t], 1.0)
-        ct_c.SetCoefficient(c_pv[t],   1.0)
+        ct_c.SetCoefficient(c_pv[t], 1.0)
+        # d_t <= E_MAX_QH ya está en la cota superior de d[t]
 
-        # d_t <= E_MAX_QH ya está en la cota superior de la variable d[t]
+    # ============================================================
+    # ✅ Degradación: limitar ciclos equivalentes anuales
+    #     EFC ≈ sum(descarga_kWh) / E_CAP
+    #     => sum(descarga_kWh) <= E_CAP * N_CICLOS_EQ_MAX
+    # ============================================================
+    if np.isfinite(N_CICLOS_EQ_MAX) and N_CICLOS_EQ_MAX > 0:
+        ct_ciclos = solver.Constraint(-solver.infinity(), float(E_CAP) * float(N_CICLOS_EQ_MAX))
+        for t in range(T):
+            ct_ciclos.SetCoefficient(d[t], 1.0)
 
-    # ----- Objetivo: minimizar coste neto = compras red - ingresos FV -----
+    # ============================================================
+    # ✅ Optimización en 2 etapas (lexicográfica)
+    # ============================================================
     objective = solver.Objective()
+    objective.SetMinimization()
+
+    # ---- Etapa 1: minimizar excesos (ponderación por mes) ----
+    objective.Clear()
+    for m, z in z_mes.items():
+        w = float(coef_exceso_mes.get(m, 0.0))
+        if w > 0.0:
+            objective.SetCoefficient(z, w)
+
+    status = solver.Solve()
+    if status != pywraplp.Solver.OPTIMAL:
+        raise RuntimeError(f"Etapa 1 (excesos) no encontró óptimo (status={status}).")
+
+    Z_star = float(objective.Value())
+
+    # Fijar excesos mínimos encontrados (con una tolerancia muy pequeña)
+    ct_fixZ = solver.Constraint(-solver.infinity(), Z_star + float(EPS_EXCESOS))
+    for m, z in z_mes.items():
+        w = float(coef_exceso_mes.get(m, 0.0))
+        if w > 0.0:
+            ct_fixZ.SetCoefficient(z, w)
+
+    # ---- Etapa 2: minimizar coste de energía (sin degradación, sin coste de excesos) ----
+    objective.Clear()
     modalidad = st.session_state.get("modalidad")
 
     for t in range(T):
-        # Precio base del término de energía (OMIE + desvíos + CG, etc.)
+        # Precio base término energía (OMIE + desvíos + CG, etc.)
         precio_compra = float(precio_vec[t])  # €/MWh
 
-        # ✅ Si es Indexado pass through: añadir ATR energía [€/MWh] por QH
+        # Indexado pass through: añadir ATR energía [€/MWh] por QH
         if modalidad == "Indexado pass through":
             precio_compra += float(atr_vec[t])
 
@@ -515,39 +565,28 @@ def simular_bess_milp(HW):
         # Ingreso por excedentes FV
         objective.SetCoefficient(pv_export[t], -coef_sell)
 
-        # 🔧 Coste de degradación por energía descargada (€/kWh)
-        if C_DEG_KWH > 0.0:
-            objective.SetCoefficient(d[t], C_DEG_KWH)
-            
-    # Penalización mensual simplificada de excesos de potencia (€/kW * z_mes[m])
-    for m, z in z_mes.items():
-        coef_exc = float(coef_exceso_mes.get(m, 0.0))
-        if coef_exc > 0.0:
-            objective.SetCoefficient(z, coef_exc)
-
     objective.SetMinimization()
 
-    # ----- Resolver -----
     status = solver.Solve()
     if status != pywraplp.Solver.OPTIMAL:
-        raise RuntimeError(f"Solver no encontró óptimo (status={status}).")
+        raise RuntimeError(f"Etapa 2 (energía) no encontró óptimo (status={status}).")
 
     # ----- Reconstruir DataFrame con el mismo formato que simular_bess -----
-    carga_red_kWh   = np.array([c_grid[t].solution_value() for t in range(T)])
-    carga_exc_kWh   = np.array([c_pv[t].solution_value()   for t in range(T)])
-    descarga_kWh    = np.array([d[t].solution_value()      for t in range(T)])
-    energia_kWh     = np.array([e[t].solution_value()      for t in range(T)])
-    soc_pu          = energia_kWh / E_CAP
-    cons_red_pro_kWh = np.array([g_load[t].solution_value() + c_grid[t].solution_value()for t in range(T)])
-    vertido_kWh     = np.array([pv_export[t].solution_value() for t in range(T)])
+    carga_red_kWh    = np.array([c_grid[t].solution_value() for t in range(T)])
+    carga_exc_kWh    = np.array([c_pv[t].solution_value() for t in range(T)])
+    descarga_kWh     = np.array([d[t].solution_value() for t in range(T)])
+    energia_kWh      = np.array([e[t].solution_value() for t in range(T)])
+    soc_pu           = energia_kWh / E_CAP
+    cons_red_pro_kWh = np.array([g_load[t].solution_value() + c_grid[t].solution_value() for t in range(T)])
+    vertido_kWh      = np.array([pv_export[t].solution_value() for t in range(T)])
     ingreso_vertido_eur = vertido_kWh * (precio_venta_fv_vec / 1000.0)
-    maximetro_kW    = cons_red_pro_kWh * 4.0
+    maximetro_kW     = cons_red_pro_kWh * 4.0
 
     out = pd.DataFrame({
         "datetime": base_dt_index.values,
-        "load_kWh": load_vec, 
+        "load_kWh": load_vec,
         "cons_red_pro_kWh": cons_red_pro_kWh,
-        "excedentes_kWh": excedentes_vec,           # base para referencia
+        "excedentes_kWh": excedentes_vec,  # base para referencia
         "precio_eur_mwh": precio_vec,
         "carga_red_kWh": carga_red_kWh,
         "carga_exc_kWh": carga_exc_kWh,
@@ -6131,7 +6170,6 @@ if st.session_state["page"] == "Optimizador":
     render_optimizador()
 else:
     render_evaluador()
-
 
 
 
