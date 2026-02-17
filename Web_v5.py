@@ -109,8 +109,8 @@ def check_login():
         PASSWORD = st.secrets["PASS"]
     except Exception:
         # Fallback para desarrollo local si no hay secrets
-        USUARIO = "marcos"
-        PASSWORD = "2003"
+        USUARIO = "msenergy"
+        PASSWORD = "2026"
 
     if entrar:
         if usuario == USUARIO and password == PASSWORD:
@@ -6131,6 +6131,7 @@ if st.session_state["page"] == "Optimizador":
     render_optimizador()
 else:
     render_evaluador()
+
 
 
 
