@@ -6163,6 +6163,109 @@ def render_evaluador():
         components.html(html_button, height=60, scrolling=False)
         # ========= FIN Exportar PDF =========
 
+        # ================== DESCARGA EXCEL VECTORES (auditoría EMS) ==================
+        from io import BytesIO
+        import numpy as np
+        import pandas as pd
+
+        df_sim = st.session_state.get("simul_bess_df", None)
+
+        if df_sim is None or df_sim.empty:
+            st.info("No hay simulación BESS en memoria para descargar el Excel de auditoría.")
+        else:
+            df_sim = df_sim.copy()
+
+            # --- g_load (energía comprada para consumo directo) ---
+            # En tu MILP: cons_red_pro_kWh = g_load + carga_red_kWh
+            if "cons_red_pro_kWh" in df_sim.columns and "carga_red_kWh" in df_sim.columns:
+                df_sim["g_load_kWh"] = (
+                    pd.to_numeric(df_sim["cons_red_pro_kWh"], errors="coerce").fillna(0.0)
+                    - pd.to_numeric(df_sim["carga_red_kWh"], errors="coerce").fillna(0.0)
+                )
+            else:
+                df_sim["g_load_kWh"] = np.nan
+
+            # --- Periodos por QH (P1..P6 / P1..P3) ---
+            tarifa = (st.session_state.get("tarifa") or "3.0TD").replace(" ", "").upper()
+            n_per = 3 if tarifa == "2.0TD" else 6
+
+            # Intentamos reconstruir el periodo a partir de consumo_con_mercado (que ya tiene periodos_20td o periodos_no20td)
+            per_lbl = None
+            try:
+                df_aux = st.session_state.get("consumo_con_mercado", None)
+
+                if df_aux is not None and len(df_aux):
+                    df_aux = df_aux.copy()
+                    if "datetime" in df_aux.columns:
+                        df_aux["datetime"] = to_naive_utc_index(df_aux["datetime"])
+                        df_join = df_sim[["datetime"]].copy()
+                        df_join["datetime"] = to_naive_utc_index(df_join["datetime"])
+                        dfp = df_join.set_index("datetime").join(df_aux.set_index("datetime"), how="left")
+                    else:
+                        df_aux.index = to_naive_utc_index(df_aux.index)
+                        dfp = df_sim.set_index(to_naive_utc_index(df_sim["datetime"])).join(df_aux, how="left")
+
+                    col_p = "periodos_20td" if tarifa == "2.0TD" else "periodos_no20td"
+                    if col_p in dfp.columns:
+                        per_num = pd.to_numeric(dfp[col_p], errors="coerce")
+                        miss = per_num.isna()
+                        if miss.any():
+                            per_num.loc[miss] = pd.to_numeric(
+                                dfp.loc[miss, col_p].astype(str).str.upper().str.extract(r"(\d+)")[0],
+                                errors="coerce"
+                            )
+                        per_num = per_num.fillna(1).astype(int).clip(1, n_per)
+                        per_lbl = ("P" + per_num.astype(str)).values
+            except Exception:
+                per_lbl = None
+
+            if per_lbl is None:
+                # Fallback: si no podemos reconstruir, dejamos "P?"
+                per_lbl = np.array(["P?"] * len(df_sim), dtype=object)
+
+            df_sim["periodo"] = per_lbl
+
+            # --- Normalizar nombres solicitados ---
+            # "carga de fv" = carga_exc_kWh en tu DF
+            if "carga_exc_kWh" in df_sim.columns and "carga_fv_kWh" not in df_sim.columns:
+                df_sim["carga_fv_kWh"] = pd.to_numeric(df_sim["carga_exc_kWh"], errors="coerce").fillna(0.0)
+            elif "carga_fv_kWh" not in df_sim.columns:
+                df_sim["carga_fv_kWh"] = 0.0
+
+            # Asegurar numéricos (por si vienen como object)
+            for c in ["load_kWh", "carga_red_kWh", "carga_fv_kWh", "descarga_kWh", "g_load_kWh"]:
+                if c in df_sim.columns:
+                    df_sim[c] = pd.to_numeric(df_sim[c], errors="coerce").fillna(0.0)
+                else:
+                    df_sim[c] = 0.0
+
+            # --- Dataset final a exportar ---
+            cols_export = [
+                "datetime",
+                "periodo",
+                "load_kWh",
+                "g_load_kWh",
+                "carga_red_kWh",
+                "carga_fv_kWh",
+                "descarga_kWh",
+            ]
+            df_out = df_sim[cols_export].copy()
+            df_out["datetime"] = pd.to_datetime(df_out["datetime"], errors="coerce")
+
+            # --- Excel ---
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                df_out.to_excel(writer, index=False, sheet_name="Vectores_QH")
+            buffer.seek(0)
+
+            st.download_button(
+                label="📥 Descargar Excel (load, g_load, cargas, descarga, periodos)",
+                data=buffer,
+                file_name="vectores_simulacion_bess_qh.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        # ================== FIN DESCARGA EXCEL VECTORES ==================
+
 # =========================
 # ROUTER PRINCIPAL
 # =========================
