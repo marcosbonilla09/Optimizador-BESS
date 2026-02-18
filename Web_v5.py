@@ -477,24 +477,18 @@ def simular_bess_milp(HW):
         ct_pvexp = solver.Constraint(0.0, float(excedentes_vec[t]))
         ct_pvexp.SetCoefficient(pv_export[t], 1.0)
 
-    # 4) Potencia contratada: la batería NO puede aumentar la potencia de red respecto a:
-    #    - la potencia contratada si el consumo base está por debajo
-    #    - el propio consumo base si ya está por encima (no empeorar excesos)
-    for t in range(T):
-        P_cons_t  = 4.0 * float(cons[t])          # kW sin BESS
-        P_contr_t = float(pot_contratada[t])      # kW contratada (SIN tolerancias)
-        P_cap_t   = max(P_cons_t, P_contr_t)      # techo "no empeorar"
-
-        ct = solver.Constraint(-solver.infinity(), float(P_cap_t))
-        ct.SetCoefficient(p_grid[t], 1.0)
-
-    # 4b) Enlace con exceso mensual simplificado:
-    # z_mes[m] >= p_grid_t - Pcontr_t
+    # 4) Potencia contratada + excesos mensuales (SIN "techo no empeorar")
+    #    Permitimos que la batería cargue desde red aunque suba p_grid por encima del consumo base.
+    #    El exceso respecto a potencia contratada se captura con z_mes[m] (kW) y se penaliza en Etapa 1.
+    #
+    #    Restricción por cada QH:
+    #       p_grid[t] - z_mes[mes(t)] <= P_contratada[t]
+    #    donde z_mes[m] >= 0 actúa como "slack" (exceso máximo del mes).
     for t in range(T):
         m = int(meses[t])
-        P_lim_t = float(pot_contratada[t])
+        P_lim_t = float(pot_contratada[t])  # kW contratada del QH
 
-        ct_z = solver.Constraint(-solver.infinity(), P_lim_t)  # p_grid_t - z_mes[m] <= P_lim_t
+        ct_z = solver.Constraint(-solver.infinity(), P_lim_t)
         ct_z.SetCoefficient(p_grid[t], 1.0)
         ct_z.SetCoefficient(z_mes[m], -1.0)
 
