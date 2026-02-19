@@ -4982,7 +4982,7 @@ def render_evaluador():
             b_d, inv_d, n, ctx_loc = args
             b_row   = SimpleNamespace(**b_d)
             inv_row = SimpleNamespace(**inv_d)
-            return evaluar_combinacion(b_row, inv_row, n, dict(ctx_loc), return_sim=False)
+            return evaluar_combinacion(b_row, inv_row, n, dict(ctx_loc), return_sim=True)
 
         max_workers = max(1, os.cpu_count() - 1)
         results_local = []
@@ -5043,6 +5043,8 @@ def render_evaluador():
         best_global = max(results_local, key=_score_res)
         mejor_TIR_global = best_global.get("TIR", np.nan)
         mejor_VAN_global = best_global.get("VAN", np.nan)
+        if best_global.get("SIM") is not None:
+            st.session_state["simul_bess_df"] = best_global["SIM"]
 
         import io
 
