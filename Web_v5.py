@@ -5004,6 +5004,26 @@ def render_evaluador():
                         + traceback.format_exc()
                     )
 
+        # ================= DEBUG SIMULACIÓN =================
+        if results_local:
+            res_debug = results_local[0]  # solo hay una combinación en el evaluador
+
+            df_sim_debug = res_debug.get("SIM")
+
+            if df_sim_debug is not None and not df_sim_debug.empty:
+                st.subheader("DEBUG SIMULACIÓN")
+
+                st.write("Máx energía almacenada (kWh):",
+                        float(df_sim_debug["energia_almacenada_kWh"].max()))
+
+                st.write("Mín energía almacenada (kWh):",
+                        float(df_sim_debug["energia_almacenada_kWh"].min()))
+
+                st.write("Primeras filas simulación:")
+                st.dataframe(df_sim_debug.head())
+            else:
+                st.warning("No hay dataframe de simulación en el resultado.")
+        # =====================================================
         # ---------- Seleccionar la mejor combinación según la TIR (y VAN como respaldo) ----------
         if not results_local:
             st.error("No se obtuvo ninguna simulación válida de las combinaciones evaluadas.")
