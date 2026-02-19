@@ -419,18 +419,18 @@ def simular_bess_milp(HW):
     # t = 0: e_0 = E_MIN + eta_c*(c0) - d0/eta_d
     cons0 = solver.Constraint(E_MIN, E_MIN)
     cons0.SetCoefficient(e[0], 1.0)
-    cons0.SetCoefficient(c_grid[0], -ETA_C)
-    cons0.SetCoefficient(c_pv[0], -ETA_C)
-    cons0.SetCoefficient(d[0], 1.0 / ETA_D)
+    cons0.SetCoefficient(c_grid[0], -1)
+    cons0.SetCoefficient(c_pv[0], -1)
+    cons0.SetCoefficient(d[0], 1.0)
 
     for t in range(1, T):
         ct = solver.Constraint(0.0, 0.0)
         # e_t - e_{t-1} - eta_c*(c_grid+c_pv) + d/eta_d = 0
         ct.SetCoefficient(e[t], 1.0)
         ct.SetCoefficient(e[t - 1], -1.0)
-        ct.SetCoefficient(c_grid[t], -ETA_C)
-        ct.SetCoefficient(c_pv[t], -ETA_C)
-        ct.SetCoefficient(d[t], 1.0 / ETA_D)
+        ct.SetCoefficient(c_grid[t], -1)
+        ct.SetCoefficient(c_pv[t], -1)
+        ct.SetCoefficient(d[t], 1.0)
 
     # 1b) Condición SOC final (evita vaciar la batería al final del año)
     ct_end = solver.Constraint(0.0, solver.infinity())  # e[T-1] - e[0] >= 0
