@@ -397,10 +397,12 @@ def simular_bess_milp(HW):
     E_MAX_QH    = min(P_BATT, P_INV) * 0.25    # [kWh/QH]
     E_MAX_QH_FV = min(P_BATT, P_INV_FV) * 0.25 if P_INV_FV > 0 else E_MAX_QH
 
-    # ----- Crear solver LP -----
-    solver = pywraplp.Solver.CreateSolver("GLOP")  # LP continuo (rápido)
+    # ----- Crear solver MIP (respeta binarios/enteros) -----
+    solver = pywraplp.Solver.CreateSolver("CBC_MIXED_INTEGER_PROGRAMMING")
     if solver is None:
-        raise RuntimeError("No se pudo crear el solver OR-Tools (GLOP).")
+        solver = pywraplp.Solver.CreateSolver("SCIP")  # fallback si CBC no está
+    if solver is None:
+        raise RuntimeError("No se pudo crear un solver MIP (CBC/SCIP).")
 
     # ----- Variables -----
     e        = [solver.NumVar(E_MIN, E_CAP, f"e_{t}") for t in range(T)]
@@ -412,7 +414,7 @@ def simular_bess_milp(HW):
     pv_export = [solver.NumVar(0.0, solver.infinity(), f"pv_export_{t}") for t in range(T)]
     p_grid   = [solver.NumVar(0.0, solver.infinity(), f"p_grid_{t}") for t in range(T)]
     z_mes    = {m: solver.NumVar(0.0, solver.infinity(), f"z_exceso_mes_{m}") for m in meses_unicos}
-    u = [solver.IntVar(0, 1, f"u_{t}") for t in range(T)]  # 1=descarga, 0=carga
+    u = [solver.BoolVar(0, 1, f"u_{t}") for t in range(T)]  # 1=descarga, 0=carga
 
     # ----- Restricciones -----
 
