@@ -412,6 +412,7 @@ def simular_bess_milp(HW):
     pv_export = [solver.NumVar(0.0, solver.infinity(), f"pv_export_{t}") for t in range(T)]
     p_grid   = [solver.NumVar(0.0, solver.infinity(), f"p_grid_{t}") for t in range(T)]
     z_mes    = {m: solver.NumVar(0.0, solver.infinity(), f"z_exceso_mes_{m}") for m in meses_unicos}
+    u = [solver.IntVar(0, 1, f"u_{t}") for t in range(T)]  # 1=descarga, 0=carga
 
     # ----- Restricciones -----
 
@@ -464,13 +465,19 @@ def simular_bess_milp(HW):
         ct = solver.Constraint(0.0, float(excedentes_vec[t]))
         ct.SetCoefficient(c_pv[t], 1.0)
 
-    # 3c) Evitar simultaneidad carga/descarga (relajación física)
-    # d_t + c_grid_t + c_pv_t <= E_MAX_QH
     for t in range(T):
-        ct_sync = solver.Constraint(-solver.infinity(), E_MAX_QH)
-        ct_sync.SetCoefficient(d[t], 1.0)
-        ct_sync.SetCoefficient(c_grid[t], 1.0)
-        ct_sync.SetCoefficient(c_pv[t], 1.0)
+        # CARGA permitida solo si u=0:
+        # c_grid[t] + c_pv[t] <= (1 - u[t]) * E_MAX_QH
+        ct_charge_mode = solver.Constraint(-solver.infinity(), E_MAX_QH)
+        ct_charge_mode.SetCoefficient(c_grid[t], 1.0)
+        ct_charge_mode.SetCoefficient(c_pv[t], 1.0)
+        ct_charge_mode.SetCoefficient(u[t], E_MAX_QH)  # c_grid+c_pv + E_MAX_QH*u <= E_MAX_QH
+
+        # DESCARGA permitida solo si u=1:
+        # d[t] <= u[t] * E_MAX_QH
+        ct_discharge_mode = solver.Constraint(-solver.infinity(), 0.0)
+        ct_discharge_mode.SetCoefficient(d[t], 1.0)
+        ct_discharge_mode.SetCoefficient(u[t], -E_MAX_QH)  # d - E_MAX_QH*u <= 0
 
     # 3d) El vertido FV no puede superar los excedentes reales sin BESS
     for t in range(T):
