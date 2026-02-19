@@ -833,10 +833,14 @@ def evaluar_combinacion(b_row, inv_row, n_inv: int, ctx: dict, return_sim: bool 
     if not (0 < HW["ETA_C"] <= 1 and 0 < HW["ETA_D"] <= 1):
         raise ValueError(f"Eficiencias fuera de (0,1]: ETA_C={HW['ETA_C']}, ETA_D={HW['ETA_D']}")
 
+    st.write("DEBUG b_row.cap_kWh =", b_row.cap_kWh)
+    st.write("DEBUG HW['E_CAP']   =", HW["E_CAP"])
+
     # Simulación + economía (igual que ahora)
     df_sim = simular_bess_milp(HW)
     eco = evaluar_economia(ECO, df_sim, ctx)
 
+    st.write("DEBUG max energia_almacenada_kWh =", float(df_sim["energia_almacenada_kWh"].max()))
     # --- resumen ligero para comparar combinaciones (sin devolver el DF completo) --- BORRRRAAAR!!!!
     try:
         kWh_carga_red = float(np.sum(df_sim["carga_red_kWh"]))
