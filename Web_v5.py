@@ -414,7 +414,7 @@ def simular_bess_milp(HW):
     pv_export = [solver.NumVar(0.0, solver.infinity(), f"pv_export_{t}") for t in range(T)]
     p_grid   = [solver.NumVar(0.0, solver.infinity(), f"p_grid_{t}") for t in range(T)]
     z_mes    = {m: solver.NumVar(0.0, solver.infinity(), f"z_exceso_mes_{m}") for m in meses_unicos}
-    u = [solver.BoolVar(0, 1, f"u_{t}") for t in range(T)]  # 1=descarga, 0=carga
+    u = [solver.BoolVar(f"u_{t}") for t in range(T)]  # 1=descarga, 0=carga
 
     # ----- Restricciones -----
 
