@@ -6304,7 +6304,8 @@ def render_evaluador():
                 "carga_red_kWh",
                 "carga_fv_kWh",
                 "descarga_kWh",
-            ]
+                "energia_almacenada_kWh",
+                "soc_pu", ]
             df_out = df_sim[cols_export].copy()
             df_out["datetime"] = pd.to_datetime(df_out["datetime"], errors="coerce")
 
