@@ -34,7 +34,7 @@ def fmt_eur(valor, dec=2):
     return f"{valor:,.{dec}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-st.set_page_config(page_title="Optimizador BESS – TFG Marcos", layout="centered")
+st.set_page_config(page_title="Optimizador BESS – MS Energy Consulting", layout="centered")
 
 # === LOGIN  ===
 def check_login():
